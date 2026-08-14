@@ -5,6 +5,7 @@ import json
 import math
 import os
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -93,6 +94,44 @@ def save_stats(stats: dict) -> None:
 
 def format_minutes(seconds: float) -> str:
     return f"{int(seconds) // 60}min"
+
+
+def run_playerctl(arguments: list[str]) -> subprocess.CompletedProcess[str] | None:
+    """Run playerctl quietly; media control is optional to the timer."""
+    try:
+        return subprocess.run(
+            ["playerctl", *arguments],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+        )
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def pause_playing_media() -> list[str]:
+    """Pause every currently playing MPRIS player and return their names."""
+    players = run_playerctl(["--list-all"])
+    if players is None or players.returncode != 0:
+        return []
+
+    paused_players = []
+    for player in players.stdout.splitlines():
+        status = run_playerctl(["--player", player, "status"])
+        if status is None or status.returncode != 0 or status.stdout.strip() != "Playing":
+            continue
+        pause = run_playerctl(["--player", player, "pause"])
+        if pause is not None and pause.returncode == 0:
+            paused_players.append(player)
+    return paused_players
+
+
+def resume_media(players: list[str]) -> None:
+    """Resume only players that Focus2 paused at the start of a break."""
+    for player in players:
+        run_playerctl(["--player", player, "play"])
 
 
 def show_focus_window(stop_requested: threading.Event, focus_seconds: int, settings: dict) -> str:
@@ -453,10 +492,12 @@ def main() -> int:
             stats["focus_minutes"] += focus_minutes
             save_stats(stats)
 
+        paused_players = pause_playing_media()
         break_seconds, done_pressed = show_break_window(stop_requested, stats)
         stats["break_seconds"] += round(break_seconds)
         if done_pressed:
             stats["done_count"] += 1
+            resume_media(paused_players)
         save_stats(stats)
 
     print("Focus2 stopped.")
