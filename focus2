@@ -68,11 +68,7 @@ def save_settings(settings: dict) -> None:
 
 def load_stats() -> dict:
     """Load today's totals, or start a new set of totals."""
-    defaults = {
-        "done_count": 0,
-        "focus_minutes": 0,
-        "break_seconds": 0,
-    }
+    defaults = empty_stats()
     try:
         saved = json.loads(stats_path_for_today().read_text())
     except (OSError, json.JSONDecodeError):
@@ -82,6 +78,15 @@ def load_stats() -> dict:
         if isinstance(saved.get(key), int) and saved[key] >= 0:
             defaults[key] = saved[key]
     return defaults
+
+
+def empty_stats() -> dict:
+    """Return a new, zeroed set of daily totals."""
+    return {
+        "done_count": 0,
+        "focus_minutes": 0,
+        "break_seconds": 0,
+    }
 
 
 def save_stats(stats: dict) -> None:
@@ -134,10 +139,12 @@ def resume_media(players: list[str]) -> None:
         run_playerctl(["--player", player, "play"])
 
 
-def show_focus_window(stop_requested: threading.Event, focus_seconds: int, settings: dict) -> str:
+def show_focus_window(
+    stop_requested: threading.Event, focus_seconds: int, settings: dict, session_day: date
+) -> str:
     """Show a small Time Timer-style dial for one focus period.
 
-    Returns ``complete``, ``break_now``, or ``stopped``. Closing the window
+    Returns ``complete``, ``break_now``, ``new_day``, or ``stopped``. Closing the window
     merely hides it; the focus timer continues in the background.
     """
     if focus_seconds == 0:
@@ -168,6 +175,7 @@ def show_focus_window(stop_requested: threading.Event, focus_seconds: int, setti
     settings_window = None
     finished = False
     break_requested = False
+    new_day = False
     ends_at = time.monotonic() + focus_seconds
 
     # Draw the static face once. The colored sector is redrawn on each tick.
@@ -334,8 +342,12 @@ def show_focus_window(stop_requested: threading.Event, focus_seconds: int, setti
     canvas.bind("<Button-1>", open_settings)
 
     def update_dial() -> None:
-        nonlocal finished, update_id
+        nonlocal finished, new_day, update_id
         if stop_requested.is_set():
+            close_window()
+            return
+        if date.today() != session_day:
+            new_day = True
             close_window()
             return
 
@@ -357,11 +369,15 @@ def show_focus_window(stop_requested: threading.Event, focus_seconds: int, setti
     window.mainloop()
     if break_requested:
         return "break_now"
+    if new_day:
+        return "new_day"
     return "complete" if finished else "stopped"
 
 
-def show_break_window(stop_requested: threading.Event, stats: dict) -> tuple[float, bool]:
-    """Show a fullscreen break window until the user presses Done."""
+def show_break_window(
+    stop_requested: threading.Event, stats: dict, session_day: date, waiting_for_new_day: bool = False
+) -> tuple[float, bool, bool]:
+    """Show a break window, or wait for the user to explicitly start a new day."""
     window = tk.Tk()
     window.title("Have a Break")
     window.configure(background="#102018")
@@ -373,6 +389,8 @@ def show_break_window(stop_requested: threading.Event, stats: dict) -> tuple[flo
     content.place(relx=0.5, rely=0.5, anchor="center")
     countdown_update_id = None
     done_pressed = False
+    new_day_started = False
+    rollover_active = waiting_for_new_day
     break_started_at = time.monotonic()
 
     def close_window() -> None:
@@ -387,13 +405,19 @@ def show_break_window(stop_requested: threading.Event, stats: dict) -> tuple[flo
         done_pressed = True
         close_window()
 
-    tk.Label(
+    def start_new_day() -> None:
+        nonlocal new_day_started
+        new_day_started = True
+        close_window()
+
+    heading = tk.Label(
         content,
-        text="Have a Break",
+        text="New Day" if waiting_for_new_day else "Have a Break",
         font=("Sans", 56, "bold"),
         foreground="white",
         background="#102018",
-    ).pack(pady=(0, 28))
+    )
+    heading.pack(pady=(0, 28))
 
     countdown = tk.Label(
         content,
@@ -406,7 +430,9 @@ def show_break_window(stop_requested: threading.Event, stats: dict) -> tuple[flo
     stats_table = tk.Frame(content, background="#102018")
     stats_table.pack(pady=(0, 32))
     stats_font = ("DejaVu Sans Mono", 20, "bold")
-    focus_label = tk.Label(stats_table, font=stats_font, foreground="#d6eadb", background="#102018")
+    focus_label = tk.Label(
+        stats_table, font=stats_font, foreground="#d6eadb", background="#102018", cursor="hand2"
+    )
     focus_label.grid(row=0, column=0, padx=(0, 18))
     tk.Label(
         stats_table,
@@ -415,20 +441,23 @@ def show_break_window(stop_requested: threading.Event, stats: dict) -> tuple[flo
         foreground="#5f7a68",
         background="#102018",
     ).grid(row=0, column=1)
-    break_label = tk.Label(stats_table, font=stats_font, foreground="#d6eadb", background="#102018")
+    break_label = tk.Label(
+        stats_table, font=stats_font, foreground="#d6eadb", background="#102018", cursor="hand2"
+    )
     break_label.grid(row=0, column=2, padx=(18, 0))
     done_label = tk.Label(
         stats_table,
         font=("DejaVu Sans Mono", 20),
         foreground="#d6eadb",
         background="#102018",
+        cursor="hand2",
     )
     done_label.grid(row=1, column=0, columnspan=3, pady=(12, 0))
 
-    tk.Button(
+    action_button = tk.Button(
         content,
-        text="Done",
-        command=finish_break,
+        text="Start a Day" if waiting_for_new_day else "Done",
+        command=start_new_day if waiting_for_new_day else finish_break,
         font=("Sans", 36, "bold"),
         foreground="white",
         background="#149447",
@@ -438,14 +467,113 @@ def show_break_window(stop_requested: threading.Event, stats: dict) -> tuple[flo
         cursor="hand2",
         padx=100,
         pady=32,
-    ).pack()
+    )
+    action_button.pack()
 
     ends_at = time.monotonic() + BREAK_SECONDS
 
+    def edit_total(kind: str) -> None:
+        """Open a small editor for one of today's displayed totals."""
+        nonlocal break_started_at
+        titles = {
+            "focus": ("Focus minutes", "minutes", stats["focus_minutes"]),
+            "break": (
+                "Break minutes",
+                "minutes",
+                int((stats["break_seconds"] + time.monotonic() - break_started_at) // 60),
+            ),
+            "done": ("Done count", "times", stats["done_count"]),
+        }
+        title, unit, current_value = titles[kind]
+        editor = tk.Toplevel(window)
+        editor.title(title)
+        editor.configure(background="#1c1d1e")
+        editor.resizable(False, False)
+        editor.transient(window)
+        editor.attributes("-topmost", True)
+
+        content = tk.Frame(editor, background="#1c1d1e")
+        content.pack(padx=24, pady=22)
+        tk.Label(
+            content,
+            text=title,
+            font=("Sans", 13, "bold"),
+            foreground="white",
+            background="#1c1d1e",
+        ).pack(anchor="w")
+        value = tk.StringVar(value=str(current_value))
+        entry = tk.Entry(content, textvariable=value, font=("Sans", 14), width=8)
+        entry.pack(anchor="w", pady=(8, 4))
+        entry.select_range(0, tk.END)
+        entry.focus_set()
+        error = tk.Label(
+            content,
+            text=f"Enter a whole number of {unit}.",
+            font=("Sans", 10),
+            foreground="#b6b6b3",
+            background="#1c1d1e",
+        )
+        error.pack(anchor="w", pady=(0, 16))
+
+        def apply_total() -> None:
+            nonlocal break_started_at
+            try:
+                new_value = int(value.get())
+            except ValueError:
+                new_value = -1
+            if new_value < 0:
+                error.configure(text="Enter a whole number greater than or equal to zero.", foreground="#ff8a9b")
+                return
+
+            if kind == "focus":
+                stats["focus_minutes"] = new_value
+            elif kind == "break":
+                stats["break_seconds"] = new_value * 60
+                break_started_at = time.monotonic()
+            else:
+                stats["done_count"] = new_value
+            save_stats(stats)
+            editor.destroy()
+
+        tk.Button(
+            content,
+            text="Save",
+            command=apply_total,
+            font=("Sans", 12, "bold"),
+            foreground="white",
+            background="#149447",
+            activebackground="#0f7939",
+            activeforeground="white",
+            borderwidth=0,
+            padx=20,
+            pady=8,
+        ).pack(anchor="e")
+        editor.bind("<Return>", lambda _event: apply_total())
+
+    focus_label.bind("<Button-1>", lambda _event: edit_total("focus"))
+    break_label.bind("<Button-1>", lambda _event: edit_total("break"))
+    done_label.bind("<Button-1>", lambda _event: edit_total("done"))
+
+    def activate_new_day() -> None:
+        heading.configure(text="New Day")
+        countdown.configure(text="")
+        action_button.configure(text="Start a Day", command=start_new_day)
+        focus_label.configure(text="Focus 0min")
+        break_label.configure(text="Break 0min")
+        done_label.configure(text="Done 0 times")
+
     def update_countdown() -> None:
-        nonlocal countdown_update_id
+        nonlocal countdown_update_id, rollover_active
         if stop_requested.is_set():
             close_window()
+            return
+
+        if not rollover_active and date.today() != session_day:
+            rollover_active = True
+            activate_new_day()
+
+        if rollover_active:
+            countdown_update_id = window.after(200, update_countdown)
             return
 
         remaining = max(0, int(ends_at - time.monotonic() + 0.999))
@@ -460,7 +588,7 @@ def show_break_window(stop_requested: threading.Event, stats: dict) -> tuple[flo
 
     update_countdown()
     window.mainloop()
-    return time.monotonic() - break_started_at, done_pressed
+    return time.monotonic() - break_started_at, done_pressed, new_day_started
 
 
 def main() -> int:
@@ -482,18 +610,41 @@ def main() -> int:
     stop_requested = threading.Event()
     stats = load_stats()
     settings = load_settings()
+    session_day = date.today()
     signal.signal(signal.SIGINT, lambda _signum, _frame: stop_requested.set())
 
     while not stop_requested.is_set():
-        focus_result = show_focus_window(stop_requested, focus_seconds, settings)
+        focus_result = show_focus_window(stop_requested, focus_seconds, settings, session_day)
         if focus_result == "stopped":
             break
+        if focus_result == "new_day":
+            paused_players = pause_playing_media()
+            _, _, new_day_started = show_break_window(
+                stop_requested, empty_stats(), date.today(), waiting_for_new_day=True
+            )
+            if not new_day_started:
+                break
+            resume_media(paused_players)
+            session_day = date.today()
+            stats = load_stats()
+            continue
         if focus_result == "complete":
             stats["focus_minutes"] += focus_minutes
             save_stats(stats)
 
         paused_players = pause_playing_media()
-        break_seconds, done_pressed = show_break_window(stop_requested, stats)
+        break_seconds, done_pressed, new_day_started = show_break_window(stop_requested, stats, session_day)
+        if date.today() != session_day and not new_day_started:
+            _, _, new_day_started = show_break_window(
+                stop_requested, empty_stats(), date.today(), waiting_for_new_day=True
+            )
+        if new_day_started:
+            resume_media(paused_players)
+            session_day = date.today()
+            stats = load_stats()
+            continue
+        if stop_requested.is_set():
+            break
         stats["break_seconds"] += round(break_seconds)
         if done_pressed:
             stats["done_count"] += 1
