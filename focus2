@@ -22,6 +22,9 @@ FOCUS_WINDOW_FOOTER_HEIGHT = 22
 BREAK_SOUND_PATH = Path(__file__).resolve().with_name(
     "Cat Meow Sound Effect ~ Attract Cats, Sounds Cats Love - SoundEffectsFactory.mp3"
 )
+LAYING_CAT_PATH = Path(__file__).resolve().with_name("laying_cat.png")
+ACTIVE_CAT_PATH = Path(__file__).resolve().with_name("active_cat.png")
+CAT_REMINDER_SECONDS = 5 * 60
 
 
 def focus_time_label_y(window_size: int) -> float:
@@ -417,7 +420,7 @@ def show_break_window(
     done_pressed = False
     new_day_started = False
     rollover_active = waiting_for_new_day
-    break_end_sound_played = False
+    cat_petted = False
     break_started_at = time.monotonic()
 
     def close_window() -> None:
@@ -497,13 +500,72 @@ def show_break_window(
         padx=100,
         pady=32,
     )
+
+    def load_cat_image(path: Path) -> tk.PhotoImage | None:
+        """Load a bundled, display-ready cat image at roughly 200 pixels wide."""
+        try:
+            image = tk.PhotoImage(file=path)
+        except tk.TclError:
+            return None
+        return image.subsample(max(1, image.width() // 200), max(1, image.width() // 200))
+
+    active_cat_image = load_cat_image(ACTIVE_CAT_PATH)
+    laying_cat_image = load_cat_image(LAYING_CAT_PATH)
+    cat_image = tk.Label(content, background="#102018", cursor="hand2")
+    cat_image.pack(pady=(0, 10))
+    pet_button = tk.Button(
+        content,
+        text="Pet the cat",
+        font=("Sans", 14, "bold"),
+        foreground="#d6eadb",
+        background="#244536",
+        activebackground="#315b47",
+        activeforeground="white",
+        borderwidth=0,
+        cursor="hand2",
+        padx=20,
+        pady=10,
+    )
+    pet_button.pack(pady=(0, 24))
+
+    def pet_cat(_event: tk.Event | None = None) -> None:
+        """Silence this break's reminders and show the cat's active state."""
+        nonlocal cat_petted, next_meow_at
+        if not cat_petted:
+            cat_petted = True
+            if laying_cat_image is not None:
+                cat_image.configure(image=laying_cat_image, text="")
+                cat_image.image = laying_cat_image
+            else:
+                cat_image.configure(text="Cat petted", foreground="#b9f6ca", font=("Sans", 14, "bold"))
+            pet_button.configure(text="Unpet cat")
+            return
+
+        cat_petted = False
+        next_meow_at = time.monotonic()
+        if active_cat_image is not None:
+            cat_image.configure(image=active_cat_image, text="")
+            cat_image.image = active_cat_image
+        else:
+            cat_image.configure(text="Pet the cat", foreground="#d6eadb", font=("Sans", 14, "bold"))
+        pet_button.configure(text="Pet the cat")
+
+    if active_cat_image is not None:
+        cat_image.configure(image=active_cat_image)
+        cat_image.image = active_cat_image
+    else:
+        cat_image.configure(text="Pet the cat", foreground="#d6eadb", font=("Sans", 14, "bold"))
+    cat_image.bind("<ButtonRelease-1>", pet_cat)
+    pet_button.configure(command=pet_cat)
+
     action_button.pack()
 
     ends_at = time.monotonic() + BREAK_SECONDS
+    next_meow_at = ends_at
 
     def edit_break_length(_event: tk.Event | None = None) -> None:
         """Set the remaining break length, with quick extension buttons."""
-        nonlocal ends_at
+        nonlocal ends_at, next_meow_at
         editor = tk.Toplevel(window)
         editor.title("Break time")
         editor.configure(background="#1c1d1e")
@@ -573,6 +635,7 @@ def show_break_window(
                 error.configure(text="Enter a number greater than or equal to zero.", foreground="#ff8a9b")
                 return
             ends_at = time.monotonic() + math.ceil(minutes * 60)
+            next_meow_at = ends_at
             editor.destroy()
 
         tk.Button(
@@ -682,7 +745,7 @@ def show_break_window(
         # done_label.configure(text="Done 0 times")
 
     def update_countdown() -> None:
-        nonlocal countdown_update_id, rollover_active, break_end_sound_played
+        nonlocal countdown_update_id, rollover_active, next_meow_at
         if stop_requested.is_set():
             close_window()
             return
@@ -699,9 +762,9 @@ def show_break_window(
         remaining = max(0, int(seconds_left + 0.999))
         minutes, seconds = divmod(remaining, 60)
         countdown.configure(text=f"{minutes:02d}:{seconds:02d}")
-        if seconds_left <= 0 and not break_end_sound_played:
-            break_end_sound_played = True
+        if seconds_left <= 0 and not cat_petted and time.monotonic() >= next_meow_at:
             play_break_sound()
+            next_meow_at = time.monotonic() + CAT_REMINDER_SECONDS
         focus_label.configure(text=f"Focus {stats['focus_minutes']}min")
         break_label.configure(
             text=f"Break {format_minutes(stats['break_seconds'] + time.monotonic() - break_started_at)}"
