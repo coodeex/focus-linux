@@ -170,14 +170,15 @@ def play_break_sound() -> None:
 
 def show_focus_window(
     stop_requested: threading.Event, focus_seconds: int, settings: dict, session_day: date
-) -> str:
+) -> tuple[str, float]:
     """Show a small Time Timer-style dial for one focus period.
 
-    Returns ``complete``, ``break_now``, ``new_day``, or ``stopped``. Closing the window
-    merely hides it; the focus timer continues in the background.
+    Returns a result plus the elapsed focus seconds. Results are ``complete``, ``break_now``,
+    ``new_day``, or ``stopped``. Closing the window merely hides it; the focus timer continues
+    in the background.
     """
     if focus_seconds == 0:
-        return "stopped" if stop_requested.is_set() else "complete"
+        return ("stopped" if stop_requested.is_set() else "complete"), 0
 
     window_size = settings["focus_window_size"]
     window = tk.Tk()
@@ -205,6 +206,7 @@ def show_focus_window(
     finished = False
     break_requested = False
     new_day = False
+    focus_started_at = time.monotonic()
     ends_at = time.monotonic() + focus_seconds
 
     # Draw the static face once. The colored sector is redrawn on each tick.
@@ -396,11 +398,12 @@ def show_focus_window(
 
     update_dial()
     window.mainloop()
+    elapsed_seconds = min(focus_seconds, max(0, time.monotonic() - focus_started_at))
     if break_requested:
-        return "break_now"
+        return "break_now", elapsed_seconds
     if new_day:
-        return "new_day"
-    return "complete" if finished else "stopped"
+        return "new_day", elapsed_seconds
+    return ("complete" if finished else "stopped"), elapsed_seconds
 
 
 def show_break_window(
@@ -800,7 +803,9 @@ def main() -> int:
     signal.signal(signal.SIGINT, lambda _signum, _frame: stop_requested.set())
 
     while not stop_requested.is_set():
-        focus_result = show_focus_window(stop_requested, focus_seconds, settings, session_day)
+        focus_result, elapsed_focus_seconds = show_focus_window(
+            stop_requested, focus_seconds, settings, session_day
+        )
         if focus_result == "stopped":
             break
         if focus_result == "new_day":
@@ -816,6 +821,9 @@ def main() -> int:
             continue
         if focus_result == "complete":
             stats["focus_minutes"] += focus_minutes
+            save_stats(stats)
+        elif focus_result == "break_now":
+            stats["focus_minutes"] += int(elapsed_focus_seconds // 60)
             save_stats(stats)
 
         paused_players = pause_playing_media()
