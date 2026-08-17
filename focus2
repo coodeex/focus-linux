@@ -514,11 +514,14 @@ def show_break_window(
 
     active_cat_image = load_cat_image(ACTIVE_CAT_PATH)
     laying_cat_image = load_cat_image(LAYING_CAT_PATH)
-    cat_image = tk.Label(content, background="#102018", cursor="hand2")
-    cat_image.pack(pady=(0, 10))
+    cat_area = tk.Frame(content, background="#102018", width=200, height=180)
+    cat_area.pack(pady=(0, 24))
+    cat_area.pack_propagate(False)
+    cat_image = tk.Label(cat_area, background="#102018", cursor="hand2")
+    cat_image.pack()
     pet_button = tk.Button(
-        content,
-        text="Pet the cat",
+        cat_area,
+        text="Pet",
         font=("Sans", 14, "bold"),
         foreground="#d6eadb",
         background="#244536",
@@ -529,7 +532,9 @@ def show_break_window(
         padx=20,
         pady=10,
     )
-    pet_button.pack(pady=(0, 24))
+    def place_pet_button(image: tk.PhotoImage | None) -> None:
+        image_height = image.height() if image is not None else 0
+        pet_button.place(relx=0.5, x=0, y=image_height - 5, anchor="n")
 
     def pet_cat(_event: tk.Event | None = None) -> None:
         """Silence this break's reminders and show the cat's active state."""
@@ -539,9 +544,10 @@ def show_break_window(
             if laying_cat_image is not None:
                 cat_image.configure(image=laying_cat_image, text="")
                 cat_image.image = laying_cat_image
+                place_pet_button(laying_cat_image)
             else:
                 cat_image.configure(text="Cat petted", foreground="#b9f6ca", font=("Sans", 14, "bold"))
-            pet_button.configure(text="Unpet cat")
+            pet_button.configure(text="Unpet")
             return
 
         cat_petted = False
@@ -549,15 +555,18 @@ def show_break_window(
         if active_cat_image is not None:
             cat_image.configure(image=active_cat_image, text="")
             cat_image.image = active_cat_image
+            place_pet_button(active_cat_image)
         else:
-            cat_image.configure(text="Pet the cat", foreground="#d6eadb", font=("Sans", 14, "bold"))
-        pet_button.configure(text="Pet the cat")
+            cat_image.configure(text="Pet", foreground="#d6eadb", font=("Sans", 14, "bold"))
+        pet_button.configure(text="Pet")
 
     if active_cat_image is not None:
         cat_image.configure(image=active_cat_image)
         cat_image.image = active_cat_image
+        place_pet_button(active_cat_image)
     else:
-        cat_image.configure(text="Pet the cat", foreground="#d6eadb", font=("Sans", 14, "bold"))
+        cat_image.configure(text="Pet", foreground="#d6eadb", font=("Sans", 14, "bold"))
+        place_pet_button(None)
     cat_image.bind("<ButtonRelease-1>", pet_cat)
     pet_button.configure(command=pet_cat)
 
