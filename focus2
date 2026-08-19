@@ -302,7 +302,7 @@ def show_focus_window(
             background="#1c1d1e",
         ).pack(anchor="w")
         size_value = tk.StringVar(value=str(window_size))
-        size_entry = tk.Entry(content, textvariable=size_value, font=("Sans", 14), width=8)
+        size_entry = tk.Entry(content, textvariable=size_value, font=("Sans", 14), width=6)
         size_entry.pack(anchor="w", pady=(8, 4))
         size_entry.select_range(0, tk.END)
         size_entry.focus_set()
@@ -315,18 +315,53 @@ def show_focus_window(
         )
         error_label.pack(anchor="w", pady=(0, 16))
 
+        tk.Label(
+            content,
+            text="Minutes left",
+            font=("Sans", 13, "bold"),
+            foreground="white",
+            background="#1c1d1e",
+        ).pack(anchor="w")
+        remaining_minutes = math.ceil(max(0, ends_at - time.monotonic()) / 60)
+        minutes_value = tk.StringVar(value=str(remaining_minutes))
+        minutes_controls = tk.Frame(content, background="#1c1d1e")
+        minutes_controls.pack(anchor="w", pady=(8, 4))
+        minutes_entry = tk.Entry(minutes_controls, textvariable=minutes_value, font=("Sans", 14), width=6)
+        minutes_entry.pack(side="left")
+        for minutes in (1, 3, 5, 10, 15):
+            tk.Button(
+                minutes_controls,
+                text=str(minutes),
+                command=lambda amount=minutes: minutes_value.set(str(amount)),
+                font=("Sans", 10, "bold"),
+                foreground="white",
+                background="#495057",
+                activebackground="#5b646c",
+                activeforeground="white",
+                borderwidth=0,
+                padx=8,
+                pady=4,
+            ).pack(side="left", padx=(5, 0))
+        tk.Label(
+            content,
+            text="Set the remaining time in whole minutes.",
+            font=("Sans", 10),
+            foreground="#b6b6b3",
+            background="#1c1d1e",
+        ).pack(anchor="w", pady=(0, 16))
+
         tk.Button(
             content,
             text="Have a break now",
             command=take_break_now,
             font=("Sans", 12, "bold"),
             foreground="white",
-            background="#495057",
-            activebackground="#5b646c",
+            background="#149447",
+            activebackground="#0f7939",
             activeforeground="white",
             borderwidth=0,
-            padx=16,
-            pady=8,
+            padx=24,
+            pady=11,
         ).pack(anchor="w", pady=(0, 12))
 
         def close_settings() -> None:
@@ -334,14 +369,22 @@ def show_focus_window(
             settings_window.destroy()
             settings_window = None
 
-        def apply_size() -> None:
-            nonlocal window_size
+        def apply_settings() -> None:
+            nonlocal ends_at, window_size
             try:
                 new_size = int(size_value.get())
             except ValueError:
                 new_size = 0
             if not 120 <= new_size <= 800:
                 error_label.configure(text="Enter a whole number from 120 to 800.", foreground="#ff8a9b")
+                return
+
+            try:
+                new_minutes = int(minutes_value.get())
+            except ValueError:
+                new_minutes = -1
+            if new_minutes < 0:
+                error_label.configure(text="Enter whole minutes greater than or equal to zero.", foreground="#ff8a9b")
                 return
 
             scale = new_size / window_size
@@ -352,23 +395,24 @@ def show_focus_window(
             window_size = new_size
             settings["focus_window_size"] = new_size
             save_settings(settings)
+            ends_at = time.monotonic() + new_minutes * 60
             close_settings()
 
         tk.Button(
             content,
             text="Save",
-            command=apply_size,
+            command=apply_settings,
             font=("Sans", 12, "bold"),
             foreground="white",
-            background="#149447",
-            activebackground="#0f7939",
+            background="#495057",
+            activebackground="#5b646c",
             activeforeground="white",
             borderwidth=0,
             padx=20,
             pady=8,
         ).pack(anchor="e")
         settings_window.protocol("WM_DELETE_WINDOW", close_settings)
-        settings_window.bind("<Return>", lambda _event: apply_size())
+        settings_window.bind("<Return>", lambda _event: apply_settings())
 
     canvas.bind("<Button-1>", open_settings)
 
