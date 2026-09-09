@@ -126,6 +126,14 @@ def run_playerctl(arguments: list[str]) -> subprocess.CompletedProcess[str] | No
         return None
 
 
+def music_is_playing() -> bool:
+    """Return whether any MPRIS media player currently reports Playing."""
+    statuses = run_playerctl(["--all-players", "status"])
+    if statuses is None:
+        return False
+    return any(status.strip() == "Playing" for status in statuses.stdout.splitlines())
+
+
 def pause_playing_media() -> list[str]:
     """Pause every currently playing MPRIS player and return their names."""
     players = run_playerctl(["--list-all"])
@@ -308,6 +316,18 @@ def show_focus_window(
         fill="#b6b6b3",
     )
 
+    # Productivity is typically better when music is running, so this icon
+    # reminds the user that music is important whenever none is playing.
+    music_reminder = canvas.create_text(
+        window_size - 8,
+        window_size + FOCUS_WINDOW_FOOTER_HEIGHT - 3,
+        text="♫",
+        anchor="se",
+        font=("Sans", max(12, round(window_size * 18 / DEFAULT_FOCUS_WINDOW_SIZE)), "bold"),
+        fill="#b6b6b3",
+    )
+    next_music_check_at = 0.0
+
     def close_window() -> None:
         nonlocal update_id
         if update_id is not None:
@@ -442,6 +462,15 @@ def show_focus_window(
             canvas.scale("all", 0, 0, scale, scale)
             canvas.configure(width=new_size, height=new_size + FOCUS_WINDOW_FOOTER_HEIGHT)
             canvas.coords(time_text, new_size / 2, focus_time_label_y(new_size))
+            canvas.coords(
+                music_reminder,
+                new_size - 8,
+                new_size + FOCUS_WINDOW_FOOTER_HEIGHT - 3,
+            )
+            canvas.itemconfigure(
+                music_reminder,
+                font=("Sans", max(12, round(new_size * 18 / DEFAULT_FOCUS_WINDOW_SIZE)), "bold"),
+            )
             window.geometry("")
             window_size = new_size
             settings["focus_window_size"] = new_size
@@ -468,7 +497,7 @@ def show_focus_window(
     canvas.bind("<Button-1>", open_settings)
 
     def update_dial() -> None:
-        nonlocal finished, new_day, update_id
+        nonlocal finished, new_day, next_music_check_at, update_id
         if stop_requested.is_set():
             close_window()
             return
@@ -489,6 +518,11 @@ def show_focus_window(
         minutes = math.ceil(seconds_left / 60)
         canvas.itemconfigure(sector, extent=360 * progress)
         canvas.itemconfigure(time_text, text=f"{minutes} min")
+
+        now = time.monotonic()
+        if now >= next_music_check_at:
+            canvas.itemconfigure(music_reminder, state="hidden" if music_is_playing() else "normal")
+            next_music_check_at = now + 5
 
         if seconds_left == 0:
             finished = True
