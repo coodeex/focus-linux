@@ -542,7 +542,7 @@ def show_focus_window(
 
 def show_break_window(
     stop_requested: threading.Event, stats: dict, session_day: date, waiting_for_new_day: bool = False
-) -> tuple[float, bool, bool]:
+) -> tuple[float, bool, bool, int | None]:
     """Show a break window, or wait for the user to explicitly start a new day."""
     window = tk.Tk()
     window.title("Have a Break")
@@ -556,6 +556,7 @@ def show_break_window(
     countdown_update_id = None
     done_pressed = False
     new_day_started = False
+    next_focus_minutes = None
     rollover_active = waiting_for_new_day
     cat_petted = False
     audio_was_muted: bool | None = None
@@ -575,11 +576,6 @@ def show_break_window(
             countdown_update_id = None
         restore_audio()
         window.destroy()
-
-    def finish_break() -> None:
-        nonlocal done_pressed
-        done_pressed = True
-        close_window()
 
     def start_new_day() -> None:
         nonlocal new_day_started
@@ -635,7 +631,7 @@ def show_break_window(
     action_button = tk.Button(
         content,
         text="Start a Day" if waiting_for_new_day else "Done",
-        command=start_new_day if waiting_for_new_day else finish_break,
+        command=start_new_day if waiting_for_new_day else lambda: finish_break(),
         font=("Sans", 36, "bold"),
         foreground="white",
         background="#149447",
@@ -720,6 +716,106 @@ def show_break_window(
 
     ends_at = time.monotonic() + BREAK_SECONDS
     next_meow_at = ends_at
+
+    def finish_break() -> None:
+        nonlocal done_pressed, next_focus_minutes
+        seconds_left = ends_at - time.monotonic()
+        if 4 * 60 <= seconds_left <= 5 * 60:
+            # Finishing this early usually extends the previous focus session. Before
+            # starting a full new session, offer a smaller one-time focus duration.
+            chooser = tk.Toplevel(window)
+            chooser.title("Continue focusing")
+            chooser.configure(background="#1c1d1e")
+            chooser.resizable(False, False)
+            chooser.transient(window)
+            chooser.attributes("-topmost", True)
+            chooser.grab_set()
+
+            chooser_content = tk.Frame(chooser, background="#1c1d1e")
+            chooser_content.pack(padx=24, pady=22)
+            tk.Label(
+                chooser_content,
+                text="How many minutes do you want to focus?",
+                font=("Sans", 13, "bold"),
+                foreground="white",
+                background="#1c1d1e",
+            ).pack(anchor="w", pady=(0, 12))
+
+            choices = tk.Frame(chooser_content, background="#1c1d1e")
+            choices.pack(anchor="w")
+
+            def choose_minutes(minutes: int) -> None:
+                nonlocal done_pressed, next_focus_minutes
+                next_focus_minutes = minutes
+                done_pressed = True
+                chooser.destroy()
+                close_window()
+
+            for index, minutes in enumerate((1, 2, 3, 4, 5)):
+                tk.Button(
+                    choices,
+                    text=str(minutes),
+                    command=lambda amount=minutes: choose_minutes(amount),
+                    font=("Sans", 16, "bold"),
+                    foreground="white",
+                    background="#495057",
+                    activebackground="#5b646c",
+                    activeforeground="white",
+                    borderwidth=0,
+                    width=5,
+                    pady=10,
+                ).grid(row=0, column=index, padx=4, pady=4)
+
+            for index, minutes in enumerate((10, 15, 20, 25, 30)):
+                tk.Button(
+                    choices,
+                    text=str(minutes),
+                    command=lambda amount=minutes: choose_minutes(amount),
+                    font=("Sans", 11, "bold"),
+                    foreground="white",
+                    background="#495057",
+                    activebackground="#5b646c",
+                    activeforeground="white",
+                    borderwidth=0,
+                    width=5,
+                    pady=6,
+                ).grid(row=1, column=index, padx=4, pady=4)
+
+            chooser.update_idletasks()
+            middle_quick_choice = choices.grid_slaves(row=0, column=2)[0]
+            choice_center_x = (
+                middle_quick_choice.winfo_rootx()
+                - chooser.winfo_rootx()
+                + middle_quick_choice.winfo_width() // 2
+            )
+            choice_center_y = (
+                middle_quick_choice.winfo_rooty()
+                - chooser.winfo_rooty()
+                + middle_quick_choice.winfo_height() // 2
+            )
+            frame_offset_x = chooser.winfo_rootx() - chooser.winfo_x()
+            frame_offset_y = chooser.winfo_rooty() - chooser.winfo_y()
+            previous_cursor_x = window.winfo_pointerx()
+            previous_cursor_y = window.winfo_pointery()
+            chooser_x = max(
+                0,
+                min(
+                    chooser.winfo_screenwidth() - chooser.winfo_width(),
+                    previous_cursor_x - choice_center_x - frame_offset_x,
+                ),
+            )
+            chooser_y = max(
+                0,
+                min(
+                    chooser.winfo_screenheight() - chooser.winfo_height(),
+                    previous_cursor_y - choice_center_y - frame_offset_y - 29,
+                ),
+            )
+            chooser.geometry(f"+{chooser_x}+{chooser_y}")
+            return
+
+        done_pressed = True
+        close_window()
 
     def edit_break_length(_event: tk.Event | None = None) -> None:
         """Set the remaining break length, with quick extension buttons."""
@@ -932,7 +1028,7 @@ def show_break_window(
 
     update_countdown()
     window.mainloop()
-    return time.monotonic() - break_started_at, done_pressed, new_day_started
+    return time.monotonic() - break_started_at, done_pressed, new_day_started, next_focus_minutes
 
 
 def main() -> int:
@@ -948,7 +1044,6 @@ def main() -> int:
         print("Focus minutes must be a whole number greater than or equal to zero.", file=sys.stderr)
         return 2
 
-    focus_seconds = focus_minutes * 60
     print(f"Focus2 started: a break window will open every {focus_minutes} minute(s).")
 
     stop_requested = threading.Event()
@@ -956,18 +1051,21 @@ def main() -> int:
     stats = load_stats()
     settings = load_settings()
     session_day = date.today()
+    next_focus_minutes = None
     signal.signal(signal.SIGINT, lambda _signum, _frame: stop_requested.set())
     signal.signal(signal.SIGUSR1, lambda _signum, _frame: show_requested.set())
 
     while not stop_requested.is_set():
+        cycle_focus_minutes = next_focus_minutes if next_focus_minutes is not None else focus_minutes
+        next_focus_minutes = None
         focus_result, elapsed_focus_seconds = show_focus_window(
-            stop_requested, show_requested, focus_seconds, settings, session_day
+            stop_requested, show_requested, cycle_focus_minutes * 60, settings, session_day
         )
         if focus_result == "stopped":
             break
         if focus_result == "new_day":
             paused_players = pause_playing_media()
-            _, _, new_day_started = show_break_window(
+            _, _, new_day_started, _ = show_break_window(
                 stop_requested, empty_stats(), date.today(), waiting_for_new_day=True
             )
             if not new_day_started:
@@ -977,16 +1075,18 @@ def main() -> int:
             stats = load_stats()
             continue
         if focus_result == "complete":
-            stats["focus_minutes"] += focus_minutes
+            stats["focus_minutes"] += cycle_focus_minutes
             save_stats(stats)
         elif focus_result == "break_now":
             stats["focus_minutes"] += int(elapsed_focus_seconds // 60)
             save_stats(stats)
 
         paused_players = pause_playing_media()
-        break_seconds, done_pressed, new_day_started = show_break_window(stop_requested, stats, session_day)
+        break_seconds, done_pressed, new_day_started, next_focus_minutes = show_break_window(
+            stop_requested, stats, session_day
+        )
         if date.today() != session_day and not new_day_started:
-            _, _, new_day_started = show_break_window(
+            _, _, new_day_started, _ = show_break_window(
                 stop_requested, empty_stats(), date.today(), waiting_for_new_day=True
             )
         if new_day_started:
