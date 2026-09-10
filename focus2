@@ -4,8 +4,10 @@
 import json
 import math
 import os
+import queue
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -28,6 +30,70 @@ LAYING_CAT_PATH = Path(__file__).resolve().with_name("laying_cat.png")
 ACTIVE_CAT_PATH = Path(__file__).resolve().with_name("active_cat.png")
 POINTING_CAT_PATH = Path(__file__).resolve().with_name("cat_pointing_finger.jpg")
 CAT_REMINDER_SECONDS = 5 * 60
+CONTROL_SOCKET_PATH = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "focus2-control.sock"
+
+
+class ControlServer:
+    """Receive commands from the command-line controller."""
+
+    def __init__(self) -> None:
+        self.commands: queue.Queue[dict] = queue.Queue()
+        self.socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            CONTROL_SOCKET_PATH.unlink()
+        except FileNotFoundError:
+            pass
+        self.socket.bind(str(CONTROL_SOCKET_PATH))
+        self.socket.listen()
+        self.socket.settimeout(0.5)
+        self.stopped = threading.Event()
+
+    def start(self) -> None:
+        threading.Thread(target=self._serve, daemon=True).start()
+
+    def _serve(self) -> None:
+        while not self.stopped.is_set():
+            try:
+                connection, _ = self.socket.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            with connection:
+                try:
+                    command = connection.recv(256).decode().strip()
+                    request = {"command": command, "done": threading.Event(), "response": ""}
+                    self.commands.put(request)
+                    response = request["response"] if request["done"].wait(3) else "error: timer did not respond"
+                    connection.sendall((response + "\n").encode())
+                except OSError:
+                    pass
+
+    def answer_focus_commands(self, seconds_left: float) -> bool:
+        start_break = False
+        while True:
+            try:
+                request = self.commands.get_nowait()
+            except queue.Empty:
+                return start_break
+            if request["command"] == "status":
+                remaining = max(0, math.ceil(seconds_left))
+                minutes, seconds = divmod(remaining, 60)
+                request["response"] = f"Status: Focusing — {minutes:02d}:{seconds:02d} remaining."
+            elif request["command"] == "start":
+                request["response"] = "Starting break now."
+                start_break = True
+            else:
+                request["response"] = "error: no break is active"
+            request["done"].set()
+
+    def close(self) -> None:
+        self.stopped.set()
+        self.socket.close()
+        try:
+            CONTROL_SOCKET_PATH.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def focus_time_label_y(window_size: int) -> float:
@@ -217,6 +283,7 @@ def show_focus_window(
     focus_seconds: int,
     settings: dict,
     session_day: date,
+    control_server: ControlServer,
 ) -> tuple[str, float]:
     """Show a small Time Timer-style dial for one focus period.
 
@@ -497,7 +564,7 @@ def show_focus_window(
     canvas.bind("<Button-1>", open_settings)
 
     def update_dial() -> None:
-        nonlocal finished, new_day, next_music_check_at, update_id
+        nonlocal break_requested, finished, new_day, next_music_check_at, update_id
         if stop_requested.is_set():
             close_window()
             return
@@ -512,6 +579,10 @@ def show_focus_window(
             return
 
         seconds_left = max(0, ends_at - time.monotonic())
+        if control_server.answer_focus_commands(seconds_left):
+            break_requested = True
+            close_window()
+            return
         # The face is always a 60-minute clock: a 30-minute focus period
         # begins with a half-circle, and each remaining minute is six degrees.
         progress = min(1, seconds_left / DIAL_SECONDS)
@@ -541,7 +612,11 @@ def show_focus_window(
 
 
 def show_break_window(
-    stop_requested: threading.Event, stats: dict, session_day: date, waiting_for_new_day: bool = False
+    stop_requested: threading.Event,
+    stats: dict,
+    session_day: date,
+    control_server: ControlServer,
+    waiting_for_new_day: bool = False,
 ) -> tuple[float, bool, bool, int | None]:
     """Show a break window, or wait for the user to explicitly start a new day."""
     window = tk.Tk()
@@ -675,9 +750,11 @@ def show_break_window(
         image_height = image.height() if image is not None else 0
         pet_button.place(relx=0.5, x=0, y=image_height - 5, anchor="n")
 
-    def pet_cat(_event: tk.Event | None = None) -> None:
+    def pet_cat(_event: tk.Event | None = None, desired_state: bool | None = None) -> None:
         """Silence reminders, mute audio, and show the cat's resting state."""
         nonlocal cat_petted, next_meow_at, audio_was_muted
+        if desired_state is cat_petted:
+            return
         if not cat_petted:
             cat_petted = True
             audio_was_muted = system_audio_is_muted()
@@ -999,7 +1076,54 @@ def show_break_window(
         # done_label.configure(text="Done 0 times")
 
     def update_countdown() -> None:
-        nonlocal countdown_update_id, rollover_active, next_meow_at
+        nonlocal countdown_update_id, done_pressed, ends_at, next_focus_minutes, next_meow_at, rollover_active
+        finish_from_cli = False
+        while True:
+            try:
+                request = control_server.commands.get_nowait()
+            except queue.Empty:
+                break
+            command = request["command"]
+            if command == "status" and rollover_active:
+                response = "Status: Waiting to start a new day."
+            elif command == "status":
+                remaining = max(0, math.ceil(ends_at - time.monotonic()))
+                minutes, seconds = divmod(remaining, 60)
+                cat_status = "petted" if cat_petted else "not petted"
+                response = f"Status: Break — {minutes:02d}:{seconds:02d} remaining; cat {cat_status}."
+            elif command == "start":
+                response = "Break is already active."
+            elif command == "done":
+                done_pressed = True
+                next_focus_minutes = 30
+                response = "Break done; starting a 30-minute focus timer."
+                finish_from_cli = True
+            elif rollover_active:
+                response = "error: no break is active"
+            elif command.startswith("set "):
+                try:
+                    minutes = float(command.removeprefix("set "))
+                    if not math.isfinite(minutes) or minutes < 0:
+                        raise ValueError
+                except ValueError:
+                    response = "error: break minutes must be a number greater than or equal to zero"
+                else:
+                    ends_at = time.monotonic() + math.ceil(minutes * 60)
+                    next_meow_at = ends_at
+                    response = f"Break time set to {minutes:g} minute(s)."
+            elif command == "mute":
+                pet_cat(desired_state=True)
+                response = "Cat petted; audio muted."
+            elif command == "unmute":
+                pet_cat(desired_state=False)
+                response = "Cat unpetted; audio restored."
+            else:
+                response = "error: unknown command"
+            request["response"] = response
+            request["done"].set()
+        if finish_from_cli:
+            close_window()
+            return
         if stop_requested.is_set():
             close_window()
             return
@@ -1048,6 +1172,8 @@ def main() -> int:
 
     stop_requested = threading.Event()
     show_requested = threading.Event()
+    control_server = ControlServer()
+    control_server.start()
     stats = load_stats()
     settings = load_settings()
     session_day = date.today()
@@ -1059,14 +1185,14 @@ def main() -> int:
         cycle_focus_minutes = next_focus_minutes if next_focus_minutes is not None else focus_minutes
         next_focus_minutes = None
         focus_result, elapsed_focus_seconds = show_focus_window(
-            stop_requested, show_requested, cycle_focus_minutes * 60, settings, session_day
+            stop_requested, show_requested, cycle_focus_minutes * 60, settings, session_day, control_server
         )
         if focus_result == "stopped":
             break
         if focus_result == "new_day":
             paused_players = pause_playing_media()
             _, _, new_day_started, _ = show_break_window(
-                stop_requested, empty_stats(), date.today(), waiting_for_new_day=True
+                stop_requested, empty_stats(), date.today(), control_server, waiting_for_new_day=True
             )
             if not new_day_started:
                 break
@@ -1083,11 +1209,11 @@ def main() -> int:
 
         paused_players = pause_playing_media()
         break_seconds, done_pressed, new_day_started, next_focus_minutes = show_break_window(
-            stop_requested, stats, session_day
+            stop_requested, stats, session_day, control_server
         )
         if date.today() != session_day and not new_day_started:
             _, _, new_day_started, _ = show_break_window(
-                stop_requested, empty_stats(), date.today(), waiting_for_new_day=True
+                stop_requested, empty_stats(), date.today(), control_server, waiting_for_new_day=True
             )
         if new_day_started:
             resume_media(paused_players)
@@ -1102,6 +1228,7 @@ def main() -> int:
             resume_media(paused_players)
         save_stats(stats)
 
+    control_server.close()
     print("Focus2 stopped.")
     return 0
 

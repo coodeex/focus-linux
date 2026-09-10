@@ -1,0 +1,74 @@
+#!/usr/bin/env python3
+"""Control the active Focus2 break from the command line."""
+
+import math
+import os
+import socket
+import sys
+from pathlib import Path
+
+
+SOCKET_PATH = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "focus2-control.sock"
+
+
+def print_commands() -> None:
+    print("\nAvailable commands:")
+    print("  break s          Start the break now")
+    print("  break d          Finish the break and start a 30-minute focus timer")
+    print("  break <minutes>  Set the remaining break time (decimals are allowed)")
+    print("  break m          Pet the cat and mute audio")
+    print("  break um         Unpet the cat and restore audio")
+
+
+def main() -> int:
+    if len(sys.argv) > 2:
+        print("Usage: break [s|d|minutes|m|um]", file=sys.stderr)
+        return 2
+
+    show_help = len(sys.argv) == 1
+    argument = sys.argv[1].lower() if not show_help else ""
+    if show_help:
+        command = "status"
+    elif argument == "s":
+        command = "start"
+    elif argument == "d":
+        command = "done"
+    elif argument == "m":
+        command = "mute"
+    elif argument == "um":
+        command = "unmute"
+    else:
+        try:
+            minutes = float(argument)
+            if not math.isfinite(minutes) or minutes < 0:
+                raise ValueError
+        except ValueError:
+            print("Usage: break [s|d|minutes|m|um]", file=sys.stderr)
+            return 2
+        command = f"set {argument}"
+
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        client.settimeout(4)
+        client.connect(str(SOCKET_PATH))
+        client.sendall(command.encode())
+        response = client.recv(512).decode().strip()
+    except (FileNotFoundError, ConnectionRefusedError, socket.timeout, OSError):
+        if show_help:
+            print("Status: Focus2 is not running.")
+            print_commands()
+            return 0
+        print("Focus2 is not running.", file=sys.stderr)
+        return 1
+    finally:
+        client.close()
+
+    stream = sys.stderr if response.startswith("error:") else sys.stdout
+    print(response, file=stream)
+    if show_help:
+        print_commands()
+    return 1 if response.startswith("error:") else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
