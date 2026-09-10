@@ -25,8 +25,8 @@ def main() -> int:
         print("Usage: break [s|d|minutes|m|um]", file=sys.stderr)
         return 2
 
-    show_help = len(sys.argv) == 1
-    argument = sys.argv[1].lower() if not show_help else ""
+    argument = sys.argv[1].lower() if len(sys.argv) == 2 else ""
+    show_help = len(sys.argv) == 1 or argument in {"-h", "--help"}
     if show_help:
         command = "status"
     elif argument == "s":
