@@ -941,7 +941,7 @@ def show_break_window(
             value.set(str(max(0, current) + minutes))
             entry.focus_set()
 
-        for minutes in (5, 15, 30, 45):
+        for minutes in (1, 5, 15, 30, 45):
             tk.Button(
                 quick_add,
                 text=f"+{minutes}",
