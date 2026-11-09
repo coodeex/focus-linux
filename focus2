@@ -969,7 +969,8 @@ def show_break_window(
                 pady=6,
             ).pack(side="left", padx=(0, 5))
 
-        tk.Frame(editor_content, background="#515755", height=1).pack(fill="x", pady=(0, 16))
+        divider = tk.Frame(editor_content, background="#515755", height=1)
+        divider.pack(fill="x", pady=(0, 16))
         preset_grid = tk.Frame(editor_content, background="#1c1d1e")
         preset_grid.pack(anchor="w", pady=(0, 16))
 
@@ -1019,9 +1020,16 @@ def show_break_window(
         editor.bind("<Return>", lambda _event: apply_break_length())
         editor.update_idletasks()
         editor_x = window.winfo_rootx() + (window.winfo_width() - editor.winfo_reqwidth()) // 2
-        editor_y = window.winfo_rooty() + (window.winfo_height() - editor.winfo_reqheight()) // 2
-        editor.geometry(f"+{editor_x}+{editor_y}")
+        click_y = _event.y_root if _event is not None else window.winfo_pointery()
+        editor.geometry(f"+{editor_x}+{click_y - editor.winfo_reqheight() // 3}")
         editor.deiconify()
+        editor.update_idletasks()
+        divider_y = divider.winfo_rooty() - editor.winfo_rooty() + divider.winfo_height() // 2
+        editor_y = max(
+            window.winfo_rooty(),
+            min(click_y - divider_y, window.winfo_rooty() + window.winfo_height() - editor.winfo_reqheight()),
+        )
+        editor.geometry(f"+{editor_x}+{editor_y}")
         editor.lift()
         entry.focus_force()
 
