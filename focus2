@@ -916,12 +916,11 @@ def show_break_window(
         nonlocal ends_at, next_meow_at
         editor = tk.Toplevel(window)
         editor.title("Break time")
+        editor.withdraw()
         editor.configure(background="#1c1d1e")
         editor.resizable(False, False)
         editor.transient(window)
         editor.attributes("-topmost", True)
-        editor.lift()
-        editor.focus_force()
 
         editor_content = tk.Frame(editor, background="#1c1d1e")
         editor_content.pack(padx=24, pady=22)
@@ -934,33 +933,30 @@ def show_break_window(
         ).pack(anchor="w")
         remaining_minutes = math.ceil(max(0, ends_at - time.monotonic()) / 60)
         value = tk.StringVar(value=str(remaining_minutes))
-        entry = tk.Entry(editor_content, textvariable=value, font=("Sans", 14), width=8)
-        entry.pack(anchor="w", pady=(8, 4))
+        time_row = tk.Frame(editor_content, background="#1c1d1e")
+        time_row.pack(fill="x", pady=(8, 16))
+        entry = tk.Entry(time_row, textvariable=value, font=("Sans", 14), width=6)
+        entry.pack(side="left", padx=(0, 8))
         entry.select_range(0, tk.END)
-        entry.focus_set()
         error = tk.Label(
             editor_content,
-            text="Minutes may include decimals (0.01 = 1 second).",
+            text="",
             font=("Sans", 10),
-            foreground="#b6b6b3",
+            foreground="#ff8a9b",
             background="#1c1d1e",
         )
-        error.pack(anchor="w", pady=(0, 12))
-
-        quick_add = tk.Frame(editor_content, background="#1c1d1e")
-        quick_add.pack(anchor="w", pady=(0, 16))
 
         def add_minutes(minutes: int) -> None:
             try:
-                current = int(value.get())
+                current = float(value.get())
             except ValueError:
-                current = 0
-            value.set(str(max(0, current) + minutes))
+                current = 0.0
+            value.set(f"{max(0, current) + minutes:g}")
             entry.focus_set()
 
         for minutes in (1, 5, 15, 30, 45):
             tk.Button(
-                quick_add,
+                time_row,
                 text=f"+{minutes}",
                 command=lambda amount=minutes: add_minutes(amount),
                 font=("Sans", 11, "bold"),
@@ -969,25 +965,46 @@ def show_break_window(
                 activebackground="#5b646c",
                 activeforeground="white",
                 borderwidth=0,
-                padx=10,
+                padx=8,
                 pady=6,
-            ).pack(side="left", padx=(0, 6))
+            ).pack(side="left", padx=(0, 5))
 
-        def apply_break_length() -> None:
+        tk.Frame(editor_content, background="#515755", height=1).pack(fill="x", pady=(0, 16))
+        preset_grid = tk.Frame(editor_content, background="#1c1d1e")
+        preset_grid.pack(anchor="w", pady=(0, 16))
+
+        def apply_break_length(minutes: float | None = None) -> None:
             nonlocal ends_at, next_meow_at
-            try:
-                minutes = float(value.get())
-            except ValueError:
-                minutes = -1.0
-            if minutes < 0:
+            if minutes is None:
+                try:
+                    minutes = float(value.get())
+                except ValueError:
+                    minutes = -1.0
+            if not math.isfinite(minutes) or minutes < 0:
                 error.configure(text="Enter a number greater than or equal to zero.", foreground="#ff8a9b")
+                error.pack(anchor="w", pady=(0, 12))
                 return
             ends_at = time.monotonic() + math.ceil(minutes * 60)
             next_meow_at = ends_at
             editor.destroy()
 
+        for index, minutes in enumerate((5, 6, 7, 8, 9, 10, 12, 13, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60)):
+            tk.Button(
+                preset_grid,
+                text=str(minutes),
+                command=lambda amount=minutes: apply_break_length(amount),
+                font=("Sans", 11, "bold"),
+                foreground="white",
+                background="#495057",
+                activebackground="#5b646c",
+                activeforeground="white",
+                borderwidth=0,
+                width=4,
+                pady=6,
+            ).grid(row=index // 6, column=index % 6, padx=(0, 6), pady=(0, 6))
+
         tk.Button(
-            editor_content,
+            time_row,
             text="Save",
             command=apply_break_length,
             font=("Sans", 12, "bold"),
@@ -998,8 +1015,15 @@ def show_break_window(
             borderwidth=0,
             padx=20,
             pady=8,
-        ).pack(anchor="e")
+        ).pack(side="right")
         editor.bind("<Return>", lambda _event: apply_break_length())
+        editor.update_idletasks()
+        editor_x = window.winfo_rootx() + (window.winfo_width() - editor.winfo_reqwidth()) // 2
+        editor_y = window.winfo_rooty() + (window.winfo_height() - editor.winfo_reqheight()) // 2
+        editor.geometry(f"+{editor_x}+{editor_y}")
+        editor.deiconify()
+        editor.lift()
+        entry.focus_force()
 
     def edit_total(kind: str) -> None:
         """Open a small editor for one of today's displayed totals."""
