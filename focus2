@@ -648,6 +648,7 @@ def show_break_window(
     next_focus_minutes = None
     rollover_active = waiting_for_new_day
     cat_petted = False
+    evening_auto_pet_applied = False
     audio_was_muted: bool | None = None
     break_started_at = time.monotonic()
 
@@ -1127,6 +1128,7 @@ def show_break_window(
 
     def update_countdown() -> None:
         nonlocal countdown_update_id, done_pressed, ends_at, next_focus_minutes, next_meow_at, rollover_active
+        nonlocal evening_auto_pet_applied
         finish_from_cli = False
         while True:
             try:
@@ -1185,6 +1187,10 @@ def show_break_window(
         if rollover_active:
             countdown_update_id = window.after(200, update_countdown)
             return
+
+        if not evening_auto_pet_applied and datetime.now().time() >= clock_time(17, 0):
+            pet_cat(desired_state=True)
+            evening_auto_pet_applied = True
 
         seconds_left = ends_at - time.monotonic()
         remaining = max(0, int(seconds_left + 0.999))
