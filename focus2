@@ -28,6 +28,7 @@ FOCUS_WINDOW_FOOTER_HEIGHT = 22
 BREAK_SOUND_PATH = Path(__file__).resolve().with_name(
     "Cat Meow Sound Effect ~ Attract Cats, Sounds Cats Love - SoundEffectsFactory.mp3"
 )
+RELAX_AUDIO_FILES = sorted(Path(__file__).resolve().parent.glob("relax-[0-9][0-9] - *.mp3"))
 LAYING_CAT_PATH = Path(__file__).resolve().with_name("laying_cat.png")
 ACTIVE_CAT_PATH = Path(__file__).resolve().with_name("active_cat.png")
 POINTING_CAT_PATH = Path(__file__).resolve().with_name("cat_pointing_finger.jpg")
@@ -117,6 +118,8 @@ def load_settings() -> dict:
     defaults = {
         "focus_window_size": DEFAULT_FOCUS_WINDOW_SIZE,
         "focus_window_position": None,
+        "relax_music_enabled": True,
+        "relax_volume": 100,
     }
     try:
         saved = json.loads(settings_path().read_text())
@@ -133,6 +136,11 @@ def load_settings() -> dict:
         and all(isinstance(coordinate, int) for coordinate in position)
     ):
         defaults["focus_window_position"] = position
+    if isinstance(saved.get("relax_music_enabled"), bool):
+        defaults["relax_music_enabled"] = saved["relax_music_enabled"]
+    volume = saved.get("relax_volume")
+    if isinstance(volume, int) and not isinstance(volume, bool) and 0 <= volume <= 100:
+        defaults["relax_volume"] = volume
     return defaults
 
 
@@ -224,6 +232,66 @@ def resume_media(players: list[str]) -> None:
     """Resume only players that Focus2 paused at the start of a break."""
     for player in players:
         run_playerctl(["--player", player, "play"])
+
+
+def start_relax_music() -> subprocess.Popen | None:
+    """Loop the first numbered local relax track in a separate audio player."""
+    if not RELAX_AUDIO_FILES:
+        return None
+    if shutil.which("ffplay") is not None:
+        command = ["ffplay", "-nodisp", "-loglevel", "error", "-loop", "0", str(RELAX_AUDIO_FILES[0])]
+    elif shutil.which("cvlc") is not None:
+        command = ["cvlc", "--intf", "dummy", "--no-video", "--loop", str(RELAX_AUDIO_FILES[0])]
+    else:
+        return None
+    try:
+        return subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL)
+    except OSError:
+        return None
+
+
+def stop_relax_music(player: subprocess.Popen | None) -> None:
+    """Stop the break track before the previously playing media resumes."""
+    if player is None or player.poll() is not None:
+        return
+    try:
+        player.terminate()
+    except ProcessLookupError:
+        return
+    try:
+        player.wait(timeout=2)
+    except subprocess.TimeoutExpired:
+        player.kill()
+        player.wait()
+
+
+def set_relax_volume(player: subprocess.Popen, volume: int) -> bool:
+    """Set only the sink input owned by this relax player, never the whole output."""
+    try:
+        result = subprocess.run(["pactl", "-f", "json", "list", "sink-inputs"],
+                                capture_output=True, text=True, timeout=2)
+        if result.returncode != 0:
+            return False
+        inputs = json.loads(result.stdout)
+        if not isinstance(inputs, list):
+            return False
+        for sink_input in inputs:
+            if not isinstance(sink_input, dict):
+                continue
+            properties = sink_input.get("properties", sink_input.get("proplist", {}))
+            if not isinstance(properties, dict) or not isinstance(sink_input.get("index"), int):
+                continue
+            if str(properties.get("application.process.id")) != str(player.pid):
+                continue
+            change = subprocess.run(
+                ["pactl", "set-sink-input-volume", str(sink_input["index"]), f"{volume}%"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2,
+            )
+            return change.returncode == 0
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired, ValueError, TypeError, KeyError):
+        pass
+    return False
 
 
 def play_break_sound() -> None:
@@ -628,6 +696,7 @@ def show_focus_window(
 def show_break_window(
     stop_requested: threading.Event,
     stats: dict,
+    settings: dict,
     session_day: date,
     control_server: ControlServer,
     waiting_for_new_day: bool = False,
@@ -650,7 +719,41 @@ def show_break_window(
     cat_petted = False
     evening_auto_pet_applied = False
     audio_was_muted: bool | None = None
+    relax_player: subprocess.Popen | None = None
+    relax_enabled = settings["relax_music_enabled"]
+    relax_available = bool(RELAX_AUDIO_FILES) and bool(shutil.which("ffplay") or shutil.which("cvlc"))
+    volume_update_id = None
+    volume_popup = None
     break_started_at = time.monotonic()
+
+    def apply_relax_volume(attempt: int = 0) -> None:
+        nonlocal volume_update_id
+        volume_update_id = None
+        if relax_player is None or relax_player.poll() is not None:
+            return
+        if not set_relax_volume(relax_player, settings["relax_volume"]) and attempt < 12:
+            volume_update_id = window.after(250, apply_relax_volume, attempt + 1)
+
+    def queue_relax_volume() -> None:
+        nonlocal volume_update_id
+        if volume_update_id is not None:
+            window.after_cancel(volume_update_id)
+        volume_update_id = window.after(100, apply_relax_volume)
+
+    def stop_break_music() -> None:
+        nonlocal relax_player, volume_update_id
+        if volume_update_id is not None:
+            window.after_cancel(volume_update_id)
+            volume_update_id = None
+        stop_relax_music(relax_player)
+        relax_player = None
+
+    def start_break_music() -> None:
+        nonlocal relax_player
+        if not waiting_for_new_day and relax_enabled and relax_player is None:
+            relax_player = start_relax_music()
+            if relax_player is not None:
+                queue_relax_volume()
 
     def restore_audio() -> None:
         """Restore audio only when petting the cat muted an audible output."""
@@ -664,6 +767,7 @@ def show_break_window(
         if countdown_update_id is not None:
             window.after_cancel(countdown_update_id)
             countdown_update_id = None
+        stop_break_music()
         restore_audio()
         window.destroy()
 
@@ -691,12 +795,14 @@ def show_break_window(
     countdown.pack(pady=(0, 42))
 
     stats_table = tk.Frame(content, background="#102018")
-    stats_table.pack(pady=(0, 32))
+    stats_table.pack(pady=(0, 12))
+    stats_table.grid_columnconfigure(0, uniform="stat_side")
+    stats_table.grid_columnconfigure(2, uniform="stat_side")
     stats_font = ("DejaVu Sans Mono", 20, "bold")
     focus_label = tk.Label(
         stats_table, font=stats_font, foreground="#d6eadb", background="#102018", cursor="hand2"
     )
-    focus_label.grid(row=0, column=0, padx=(0, 18))
+    focus_label.grid(row=0, column=0, padx=(0, 18), sticky="e")
     tk.Label(
         stats_table,
         text="│",
@@ -707,7 +813,99 @@ def show_break_window(
     break_label = tk.Label(
         stats_table, font=stats_font, foreground="#d6eadb", background="#102018", cursor="hand2"
     )
-    break_label.grid(row=0, column=2, padx=(18, 0))
+    break_label.grid(row=0, column=2, padx=(18, 0), sticky="w")
+    def toggle_relax_music() -> None:
+        nonlocal relax_enabled
+        relax_enabled = not relax_enabled
+        settings["relax_music_enabled"] = relax_enabled
+        save_settings(settings)
+        if relax_enabled:
+            if audio_was_muted is not None:
+                restore_audio()
+            start_break_music()
+        else:
+            stop_break_music()
+        music_button.configure(
+            text="♫" if relax_enabled else "♪",
+            foreground="#b9f6ca" if relax_enabled else "#91a99b",
+            background="#244536" if relax_enabled else "#1d3127",
+        )
+
+    music_button = tk.Button(
+        content,
+        text="♫" if relax_enabled else "♪",
+        command=toggle_relax_music,
+        font=("Sans", 20, "bold"),
+        foreground="#b9f6ca" if relax_enabled else "#91a99b",
+        background="#244536" if relax_enabled else "#1d3127",
+        activeforeground="white",
+        activebackground="#315b47",
+        borderwidth=0,
+        cursor="hand2",
+        width=2,
+        pady=2,
+    )
+    if not waiting_for_new_day and relax_available:
+        music_button.pack(pady=(0, 16))
+
+    def open_relax_volume(event: tk.Event) -> None:
+        nonlocal volume_popup
+        if volume_popup is not None and volume_popup.winfo_exists():
+            volume_popup.lift()
+            return
+
+        volume_popup = tk.Toplevel(window)
+        volume_popup.title("Relax volume")
+        volume_popup.withdraw()
+        volume_popup.configure(background="#1c1d1e")
+        volume_popup.resizable(False, False)
+        volume_popup.transient(window)
+        volume_popup.attributes("-topmost", True)
+        popup_content = tk.Frame(volume_popup, background="#1c1d1e")
+        popup_content.pack(padx=18, pady=16)
+        title = tk.Label(popup_content, text="Relax volume", font=("Sans", 12, "bold"),
+                         foreground="white", background="#1c1d1e")
+        title.pack(anchor="w")
+        value_label = tk.Label(popup_content, text=f"{settings['relax_volume']}%", font=("Sans", 11),
+                               foreground="#b9f6ca", background="#1c1d1e")
+        value_label.pack(anchor="e")
+
+        def change_volume(raw_value: str) -> None:
+            settings["relax_volume"] = int(float(raw_value))
+            value_label.configure(text=f"{settings['relax_volume']}%")
+            save_settings(settings)
+            queue_relax_volume()
+
+        slider = tk.Scale(
+            popup_content, from_=0, to=100, orient=tk.HORIZONTAL, length=220,
+            showvalue=False, resolution=1, command=change_volume,
+            background="#1c1d1e", foreground="white", troughcolor="#495057",
+            activebackground="#b9f6ca", highlightthickness=0, borderwidth=0,
+        )
+        slider.set(settings["relax_volume"])
+        slider.pack()
+
+        def close_volume_popup() -> None:
+            nonlocal volume_popup
+            volume_popup.destroy()
+            volume_popup = None
+
+        volume_popup.protocol("WM_DELETE_WINDOW", close_volume_popup)
+        volume_popup.bind("<Escape>", lambda _event: close_volume_popup())
+        volume_popup.update_idletasks()
+        popup_x = max(window.winfo_rootx(), min(
+            event.x_root - volume_popup.winfo_reqwidth() // 2,
+            window.winfo_rootx() + window.winfo_width() - volume_popup.winfo_reqwidth(),
+        ))
+        popup_y = max(window.winfo_rooty(), min(
+            event.y_root + 12,
+            window.winfo_rooty() + window.winfo_height() - volume_popup.winfo_reqheight(),
+        ))
+        volume_popup.geometry(f"+{popup_x}+{popup_y}")
+        volume_popup.deiconify()
+        volume_popup.lift()
+
+    music_button.bind("<Button-3>", open_relax_volume)
     continuous_work_label = tk.Label(
         stats_table, font=stats_font, foreground="#d6eadb", background="#102018"
     )
@@ -768,15 +966,18 @@ def show_break_window(
         image_height = image.height() if image is not None else 0
         pet_button.place(relx=0.5, x=0, y=image_height - 5, anchor="n")
 
-    def pet_cat(_event: tk.Event | None = None, desired_state: bool | None = None) -> None:
+    def pet_cat(_event: tk.Event | None = None, desired_state: bool | None = None,
+                mute_audio: bool = True) -> None:
         """Silence reminders, mute audio, and show the cat's resting state."""
         nonlocal cat_petted, next_meow_at, audio_was_muted
         if desired_state is cat_petted:
             return
         if not cat_petted:
             cat_petted = True
-            audio_was_muted = system_audio_is_muted()
-            set_system_audio_muted(True)
+            if mute_audio:
+                stop_break_music()
+                audio_was_muted = system_audio_is_muted()
+                set_system_audio_muted(True)
             if laying_cat_image is not None:
                 cat_image.configure(image=laying_cat_image, text="")
                 cat_image.image = laying_cat_image
@@ -788,6 +989,7 @@ def show_break_window(
 
         cat_petted = False
         restore_audio()
+        start_break_music()
         next_meow_at = time.monotonic()
         if active_cat_image is not None:
             cat_image.configure(image=active_cat_image, text="")
@@ -1118,6 +1320,7 @@ def show_break_window(
     countdown.bind("<ButtonRelease-1>", edit_break_length)
 
     def activate_new_day() -> None:
+        stop_break_music()
         heading.configure(text="New Day")
         countdown.configure(text="")
         action_button.configure(text="Start a Day", command=start_new_day)
@@ -1189,7 +1392,7 @@ def show_break_window(
             return
 
         if not evening_auto_pet_applied and datetime.now().time() >= clock_time(17, 0):
-            pet_cat(desired_state=True)
+            pet_cat(desired_state=True, mute_audio=relax_player is None or relax_player.poll() is not None)
             evening_auto_pet_applied = True
 
         seconds_left = ends_at - time.monotonic()
@@ -1215,6 +1418,7 @@ def show_break_window(
         # done_label.configure(text=f"Done {stats['done_count']} times")
         countdown_update_id = window.after(50, update_countdown)
 
+    start_break_music()
     update_countdown()
     window.mainloop()
     return time.monotonic() - break_started_at, done_pressed, new_day_started, next_focus_minutes
@@ -1244,6 +1448,7 @@ def main() -> int:
     session_day = date.today()
     next_focus_minutes = None
     signal.signal(signal.SIGINT, lambda _signum, _frame: stop_requested.set())
+    signal.signal(signal.SIGTERM, lambda _signum, _frame: stop_requested.set())
     signal.signal(signal.SIGUSR1, lambda _signum, _frame: show_requested.set())
 
     while not stop_requested.is_set():
@@ -1258,9 +1463,10 @@ def main() -> int:
         if focus_result == "new_day":
             paused_players = pause_playing_media()
             _, _, new_day_started, _ = show_break_window(
-                stop_requested, empty_stats(), date.today(), control_server, waiting_for_new_day=True
+                stop_requested, empty_stats(), settings, date.today(), control_server, waiting_for_new_day=True
             )
             if not new_day_started:
+                resume_media(paused_players)
                 break
             resume_media(paused_players)
             session_day = date.today()
@@ -1277,11 +1483,11 @@ def main() -> int:
 
         paused_players = pause_playing_media()
         break_seconds, done_pressed, new_day_started, next_focus_minutes = show_break_window(
-            stop_requested, stats, session_day, control_server
+            stop_requested, stats, settings, session_day, control_server
         )
         if date.today() != session_day and not new_day_started:
             _, _, new_day_started, _ = show_break_window(
-                stop_requested, empty_stats(), date.today(), control_server, waiting_for_new_day=True
+                stop_requested, empty_stats(), settings, date.today(), control_server, waiting_for_new_day=True
             )
         if new_day_started:
             resume_media(paused_players)
@@ -1289,6 +1495,7 @@ def main() -> int:
             stats = load_stats()
             continue
         if stop_requested.is_set():
+            resume_media(paused_players)
             break
         stats["break_seconds"] += round(break_seconds)
         if break_seconds >= PROPER_BREAK_SECONDS:

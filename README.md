@@ -21,6 +21,8 @@ Work with a quiet, always-on-top clock. When the session ends, Focus2 fills the 
 3. **Pet the cat.** Click the cat or **Pet** to settle it, silence its reminders, and mute the default audio output. **Unpet** restores audio if Focus2 muted it.
 4. **Continue when you choose.** **Done** starts the next focus session. If you leave within the first minute, Focus2 offers a shorter one-time focus period. You can also adjust the remaining break time by clicking its countdown.
 
+Breaks can also play a local relax track automatically. Click the small **♫** button between the stats and the cat to switch it on or off. Right-click it to set the relax track's volume with a slider; that setting affects only this track and is remembered. The track stops before your earlier music resumes. Evening auto-pet still quiets the cat's reminders while break music is enabled.
+
 <div align="center">
   <img src="docs/images/focus-timer.png" alt="Focus2 compact circular focus timer" width="300">
   &nbsp;&nbsp;
@@ -51,11 +53,13 @@ Then run it from this directory with your preferred focus duration in minutes:
 
 The cat images and sound are loaded beside the `focus2` script, so keep those files together. The timer can run without the optional media tools, but these enable the full experience:
 
+To add personal break music, place an MP3 beside `focus2` with a name beginning `relax-01 - `. Number later tracks `relax-02 - `, `relax-03 - `, and so on. Focus2 currently loops the first numbered track during breaks; these personal music files are kept out of Git.
+
 | Tool | What it adds |
 | --- | --- |
 | `playerctl` | Pauses playing MPRIS media during a break and resumes the players Focus2 paused when you finish it. |
-| `pactl` | Mutes the default output when you pet the cat and restores its previous audible state when you unpet it. |
-| `cvlc` or `ffplay` | Plays the bundled cat reminder sound after the break countdown reaches zero. |
+| `pactl` | Mutes the default output when you pet the cat, restores its previous audible state when you unpet it, and adjusts only the relax track's stream volume. |
+| `cvlc` or `ffplay` | Plays the bundled cat reminder sound and a local break music track. |
 
 ## Controls
 
@@ -64,6 +68,7 @@ The cat images and sound are loaded beside the `focus2` script, so keep those fi
 | Focus dial | Click to open quick settings, set the minutes left, resize the clock, or start a break immediately. |
 | Break countdown | Click to set a different remaining break length. |
 | Cat or **Pet** button | Pet or unpet the cat. |
+| Break music button | Left-click to toggle the relax track; right-click to set its volume. |
 | **Done** button | Finish the break and return to focus. |
 | Command line | Use `./break-control` to inspect or control the running timer. |
 
