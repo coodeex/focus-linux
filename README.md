@@ -85,6 +85,24 @@ The command-line controller accepts:
 
 Focus2 saves daily totals under `~/.local/state/focus2/` (or `$XDG_STATE_HOME/focus2/`) and window settings in `settings.json` there. It does not upload your timer data.
 
+## Development and releases
+
+Keep the desktop timer running from `focus-linux`. Make changes in the separate
+`focus-linux-dev` worktree. Run `scripts/dev-app 30` there to see a timer marked
+**DEV**. It has its own control socket, daily stats, and settings; it never
+pauses media, plays sounds, or changes system volume. Use `scripts/dev-client`
+to control that timer. The normal `break-control` command still controls the
+production timer.
+
+After testing and committing changes in the development worktree, run
+`python3 scripts/release.py --dry-run`, then `python3 scripts/release.py --tested`.
+The release pushes the development commit to GitHub main and fast-forwards the
+production checkout. Immediately before the production source changes, it
+records the live mode and seconds remaining. The restarted timer restores that
+mode and subtracts the few seconds spent restarting, so an active focus or
+break continues at approximately the same point. The release verifies the
+restored timer and reports its remaining seconds.
+
 ---
 
 <div align="center"><strong>Focus, break, pet, repeat.</strong></div>

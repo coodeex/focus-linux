@@ -22,6 +22,10 @@ from PIL import Image, ImageTk
 BREAK_SECONDS = 5 * 60
 PROPER_BREAK_SECONDS = 3 * 60
 CONTINUOUS_WORK_DISPLAY_SECONDS = 45 * 60
+INSTANCE = os.environ.get("FOCUS2_INSTANCE", "production")
+if INSTANCE not in ("production", "dev"):
+    raise RuntimeError("FOCUS2_INSTANCE must be production or dev")
+IS_DEV = INSTANCE == "dev"
 DEFAULT_FOCUS_WINDOW_SIZE = 340
 DIAL_SECONDS = 60 * 60
 FOCUS_WINDOW_FOOTER_HEIGHT = 22
@@ -33,7 +37,9 @@ LAYING_CAT_PATH = Path(__file__).resolve().with_name("laying_cat.png")
 ACTIVE_CAT_PATH = Path(__file__).resolve().with_name("active_cat.png")
 POINTING_CAT_PATH = Path(__file__).resolve().with_name("cat_pointing_finger.jpg")
 CAT_REMINDER_SECONDS = 5 * 60
-CONTROL_SOCKET_PATH = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "focus2-control.sock"
+RUNTIME_DIR = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp"))
+CONTROL_SOCKET_PATH = RUNTIME_DIR / ("focus2-dev-control.sock" if IS_DEV else "focus2-control.sock")
+RESTORE_PATH = RUNTIME_DIR / "focus2-restore.json"
 
 
 class ControlServer:
@@ -72,7 +78,7 @@ class ControlServer:
                 except OSError:
                     pass
 
-    def answer_focus_commands(self, seconds_left: float) -> bool:
+    def answer_focus_commands(self, seconds_left: float, elapsed: float, cycle_minutes: int) -> bool:
         start_break = False
         while True:
             try:
@@ -83,6 +89,10 @@ class ControlServer:
                 remaining = max(0, math.ceil(seconds_left))
                 minutes, seconds = divmod(remaining, 60)
                 request["response"] = f"Status: Focusing — {minutes:02d}:{seconds:02d} remaining."
+            elif request["command"] == "snapshot":
+                request["response"] = json.dumps({"version": 1, "mode": "focus",
+                    "remaining_seconds": max(0, seconds_left), "elapsed_seconds": elapsed,
+                    "cycle_minutes": cycle_minutes, "captured_at": time.time()})
             elif request["command"] == "start":
                 request["response"] = "Starting break now."
                 start_break = True
@@ -107,7 +117,7 @@ def focus_time_label_y(window_size: int) -> float:
 
 def stats_path_for_today() -> Path:
     state_home = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state"))
-    return state_home / "focus2" / f"{date.today().isoformat()}.json"
+    return state_home / ("focus2-dev" if IS_DEV else "focus2") / f"{date.today().isoformat()}.json"
 
 
 def settings_path() -> Path:
@@ -190,6 +200,8 @@ def format_minutes(seconds: float) -> str:
 
 def run_playerctl(arguments: list[str]) -> subprocess.CompletedProcess[str] | None:
     """Run playerctl quietly; media control is optional to the timer."""
+    if IS_DEV:
+        return None
     try:
         return subprocess.run(
             ["playerctl", *arguments],
@@ -236,7 +248,7 @@ def resume_media(players: list[str]) -> None:
 
 def start_relax_music() -> subprocess.Popen | None:
     """Loop the first numbered local relax track in a separate audio player."""
-    if not RELAX_AUDIO_FILES:
+    if IS_DEV or not RELAX_AUDIO_FILES:
         return None
     if shutil.which("ffplay") is not None:
         command = ["ffplay", "-nodisp", "-loglevel", "error", "-loop", "0", str(RELAX_AUDIO_FILES[0])]
@@ -268,6 +280,8 @@ def stop_relax_music(player: subprocess.Popen | None) -> None:
 
 def set_relax_volume(player: subprocess.Popen, volume: int) -> bool:
     """Set only the sink input owned by this relax player, never the whole output."""
+    if IS_DEV:
+        return False
     try:
         result = subprocess.run(["pactl", "-f", "json", "list", "sink-inputs"],
                                 capture_output=True, text=True, timeout=2)
@@ -296,7 +310,7 @@ def set_relax_volume(player: subprocess.Popen, volume: int) -> bool:
 
 def play_break_sound() -> None:
     """Play the bundled break sound once without blocking the timer."""
-    if not BREAK_SOUND_PATH.is_file():
+    if IS_DEV or not BREAK_SOUND_PATH.is_file():
         return
     try:
         if shutil.which("cvlc") is not None:
@@ -318,6 +332,8 @@ def play_break_sound() -> None:
 
 def system_audio_is_muted() -> bool | None:
     """Return the default output's mute state, if PulseAudio is available."""
+    if IS_DEV:
+        return None
     try:
         result = subprocess.run(
             ["pactl", "get-sink-mute", "@DEFAULT_SINK@"],
@@ -336,6 +352,8 @@ def system_audio_is_muted() -> bool | None:
 
 def set_system_audio_muted(muted: bool) -> None:
     """Mute or unmute the laptop's default audio output when pactl is present."""
+    if IS_DEV:
+        return
     try:
         subprocess.run(
             ["pactl", "set-sink-mute", "@DEFAULT_SINK@", "1" if muted else "0"],
@@ -356,6 +374,8 @@ def show_focus_window(
     continuous_work_seconds: int,
     session_day: date,
     control_server: ControlServer,
+    elapsed_offset: float = 0,
+    cycle_minutes: int | None = None,
 ) -> tuple[str, float]:
     """Show a small Time Timer-style dial for one focus period.
 
@@ -367,7 +387,7 @@ def show_focus_window(
 
     window_size = settings["focus_window_size"]
     window = tk.Tk()
-    window.title("")
+    window.title("Focus2 DEV" if IS_DEV else "")
     window.configure(background="#121313")
     window.resizable(False, False)
     window.attributes("-topmost", True)
@@ -392,6 +412,8 @@ def show_focus_window(
         highlightthickness=0,
     )
     canvas.pack(padx=12, pady=12)
+    if IS_DEV:
+        canvas.create_text(12, 14, text="DEV", anchor="nw", font=("Sans", 12, "bold"), fill="#ffc27a")
     saved_position = settings.get("focus_window_position")
     if saved_position is not None:
         window.geometry(f"+{saved_position[0]}+{saved_position[1]}")
@@ -403,7 +425,7 @@ def show_focus_window(
     finished = False
     break_requested = False
     new_day = False
-    focus_started_at = time.monotonic()
+    focus_started_at = time.monotonic() - elapsed_offset
     ends_at = time.monotonic() + focus_seconds
 
     # Draw the static face once. The colored sector is redrawn on each tick.
@@ -661,7 +683,8 @@ def show_focus_window(
             return
 
         seconds_left = max(0, ends_at - time.monotonic())
-        if control_server.answer_focus_commands(seconds_left):
+        if control_server.answer_focus_commands(seconds_left, time.monotonic() - focus_started_at,
+                                                cycle_minutes or math.ceil(focus_seconds / 60)):
             break_requested = True
             close_window()
             return
@@ -700,10 +723,12 @@ def show_break_window(
     session_day: date,
     control_server: ControlServer,
     waiting_for_new_day: bool = False,
+    initial_remaining: float | None = None,
+    elapsed_offset: float = 0,
 ) -> tuple[float, bool, bool, int | None]:
     """Show a break window, or wait for the user to explicitly start a new day."""
     window = tk.Tk()
-    window.title("Have a Break")
+    window.title("Have a Break · DEV" if IS_DEV else "Have a Break")
     window.configure(background="#102018")
     window.attributes("-fullscreen", True)
     window.attributes("-topmost", True)
@@ -711,6 +736,9 @@ def show_break_window(
 
     content = tk.Frame(window, background="#102018")
     content.place(relx=0.5, rely=0.5, anchor="center")
+    if IS_DEV:
+        tk.Label(content, text="DEV · separate timer · audio disabled", font=("Sans", 13, "bold"),
+                 foreground="#ffc27a", background="#102018").pack(pady=(0, 12))
     countdown_update_id = None
     done_pressed = False
     new_day_started = False
@@ -724,7 +752,7 @@ def show_break_window(
     relax_available = bool(RELAX_AUDIO_FILES) and bool(shutil.which("ffplay") or shutil.which("cvlc"))
     volume_update_id = None
     volume_popup = None
-    break_started_at = time.monotonic()
+    break_started_at = time.monotonic() - elapsed_offset
 
     def apply_relax_volume(attempt: int = 0) -> None:
         nonlocal volume_update_id
@@ -1011,7 +1039,7 @@ def show_break_window(
 
     action_button.pack()
 
-    ends_at = time.monotonic() + BREAK_SECONDS
+    ends_at = time.monotonic() + (BREAK_SECONDS if initial_remaining is None else initial_remaining)
     next_meow_at = ends_at
 
     def finish_break() -> None:
@@ -1346,6 +1374,11 @@ def show_break_window(
                 minutes, seconds = divmod(remaining, 60)
                 cat_status = "petted" if cat_petted else "not petted"
                 response = f"Status: Break — {minutes:02d}:{seconds:02d} remaining; cat {cat_status}."
+            elif command == "snapshot":
+                response = json.dumps({"version": 1, "mode": "break",
+                    "remaining_seconds": max(0, ends_at - time.monotonic()),
+                    "elapsed_seconds": max(0, time.monotonic() - break_started_at),
+                    "captured_at": time.time()})
             elif command == "start":
                 response = "Break is already active."
             elif command == "done":
@@ -1447,16 +1480,57 @@ def main() -> int:
     settings = load_settings()
     session_day = date.today()
     next_focus_minutes = None
+    restore = None
+    if not IS_DEV:
+        try:
+            restore = json.loads(RESTORE_PATH.read_text())
+            RESTORE_PATH.unlink(missing_ok=True)
+            if (restore.get("mode") not in ("focus", "break") or
+                not 0 <= time.time() - float(restore["captured_at"]) < 30 or
+                not math.isfinite(float(restore["remaining_seconds"]))):
+                restore = None
+        except (FileNotFoundError, ValueError, TypeError, KeyError, OSError):
+            restore = None
     signal.signal(signal.SIGINT, lambda _signum, _frame: stop_requested.set())
     signal.signal(signal.SIGTERM, lambda _signum, _frame: stop_requested.set())
     signal.signal(signal.SIGUSR1, lambda _signum, _frame: show_requested.set())
 
     while not stop_requested.is_set():
+        if restore is not None and restore["mode"] == "break":
+            paused_players = pause_playing_media()
+            remaining = max(0, float(restore["remaining_seconds"]) -
+                            (time.time() - float(restore["captured_at"])))
+            break_seconds, done_pressed, _, next_focus_minutes = show_break_window(
+                stop_requested, stats, settings, session_day, control_server,
+                initial_remaining=remaining,
+                elapsed_offset=max(0, float(restore.get("elapsed_seconds", 0))))
+            restore = None
+            resume_media(paused_players)
+            if stop_requested.is_set():
+                break
+            stats["break_seconds"] += round(break_seconds)
+            if break_seconds >= PROPER_BREAK_SECONDS:
+                stats["continuous_work_seconds"] = 0
+            else:
+                stats["continuous_work_seconds"] += round(break_seconds)
+            if done_pressed:
+                stats["done_count"] += 1
+            save_stats(stats)
+            continue
         cycle_focus_minutes = next_focus_minutes if next_focus_minutes is not None else focus_minutes
         next_focus_minutes = None
+        focus_seconds = cycle_focus_minutes * 60
+        elapsed_offset = 0
+        if restore is not None and restore["mode"] == "focus":
+            cycle_focus_minutes = max(1, int(restore.get("cycle_minutes", cycle_focus_minutes)))
+            focus_seconds = max(0, float(restore["remaining_seconds"]) -
+                                (time.time() - float(restore["captured_at"])))
+            elapsed_offset = max(0, float(restore.get("elapsed_seconds", 0)))
+            restore = None
         focus_result, elapsed_focus_seconds = show_focus_window(
-            stop_requested, show_requested, cycle_focus_minutes * 60, settings,
-            stats["continuous_work_seconds"], session_day, control_server
+            stop_requested, show_requested, focus_seconds, settings,
+            stats["continuous_work_seconds"], session_day, control_server,
+            elapsed_offset=elapsed_offset, cycle_minutes=cycle_focus_minutes
         )
         if focus_result == "stopped":
             break

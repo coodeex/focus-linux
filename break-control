@@ -8,7 +8,12 @@ import sys
 from pathlib import Path
 
 
-SOCKET_PATH = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / "focus2-control.sock"
+INSTANCE = os.environ.get("FOCUS2_INSTANCE", "production")
+if INSTANCE not in ("production", "dev"):
+    raise SystemExit("FOCUS2_INSTANCE must be production or dev")
+SOCKET_PATH = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp")) / (
+    "focus2-dev-control.sock" if INSTANCE == "dev" else "focus2-control.sock"
+)
 
 
 def print_commands() -> None:
