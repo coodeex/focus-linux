@@ -253,13 +253,18 @@ def start_relax_music(volume: int) -> subprocess.Popen | None:
     if shutil.which("ffplay") is not None:
         command = ["ffplay", "-nodisp", "-loglevel", "error", "-volume", str(volume),
                    "-loop", "0", str(RELAX_AUDIO_FILES[0])]
+        # Give the relax player its own PulseAudio stream memory. Otherwise it
+        # inherits a previous generic ffplay volume, which can be near silent.
+        player_env = os.environ.copy()
+        player_env["PULSE_PROP"] = "module-stream-restore.id=focus2-relax-player"
     elif shutil.which("cvlc") is not None:
         command = ["cvlc", "--intf", "dummy", "--no-video", "--loop", str(RELAX_AUDIO_FILES[0])]
+        player_env = None
     else:
         return None
     try:
         return subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL)
+                                stderr=subprocess.DEVNULL, env=player_env)
     except OSError:
         return None
 
