@@ -533,13 +533,14 @@ def show_focus_window(
 
         content = tk.Frame(settings_window, background="#1c1d1e")
         content.pack(padx=24, pady=22)
-        tk.Label(
+        clock_size_label = tk.Label(
             content,
             text="Clock size (pixels)",
             font=("Sans", 13, "bold"),
             foreground="white",
             background="#1c1d1e",
-        ).pack(anchor="w")
+        )
+        clock_size_label.pack(anchor="w")
         size_value = tk.StringVar(value=str(window_size))
         size_entry = tk.Entry(content, textvariable=size_value, font=("Sans", 14), width=6)
         size_entry.pack(anchor="w", pady=(8, 4))
@@ -620,7 +621,7 @@ def show_focus_window(
         def apply_focus_layout() -> None:
             layout_button.configure(state="disabled")
             layout_status.configure(text="Applying focus layout…", foreground="#b6b6b3")
-            layout_status.pack(anchor="w", pady=(4, 12))
+            layout_status.pack(anchor="w", after=layout_button, pady=(4, 10))
             try:
                 process = subprocess.Popen([str(FOCUS_LAYOUT_PATH)], stdout=subprocess.PIPE,
                                            stderr=subprocess.PIPE, text=True)
@@ -649,11 +650,11 @@ def show_focus_window(
 
         layout_button = tk.Button(
             content, text="Apply focus layout", command=apply_focus_layout,
-            font=("Sans", 11, "bold"), foreground="white", background="#495057",
+            font=("Sans", 10, "bold"), foreground="white", background="#495057",
             activebackground="#5b646c", activeforeground="white", borderwidth=0,
-            padx=12, pady=7,
+            padx=9, pady=4,
         )
-        layout_button.pack(anchor="w", pady=(0, 12))
+        layout_button.pack(anchor="w", before=clock_size_label, pady=(0, 12))
 
         def close_settings() -> None:
             nonlocal settings_window
