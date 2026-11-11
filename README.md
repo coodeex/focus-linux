@@ -65,7 +65,7 @@ To add personal break music, place an MP3 beside `focus2` with a name beginning 
 
 | Where | Action |
 | --- | --- |
-| Focus dial | Click to open quick settings, set the minutes left, resize the clock, or start a break immediately. |
+| Focus dial | Click to open quick settings, set the minutes left, resize the clock, apply your focus window layout, or start a break immediately. |
 | Break countdown | Click to set a different remaining break length. |
 | Cat or **Pet** button | Pet or unpet the cat. |
 | Break music button | Left-click to toggle the relax track; right-click to set its volume. |
