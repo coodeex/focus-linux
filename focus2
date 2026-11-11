@@ -246,12 +246,13 @@ def resume_media(players: list[str]) -> None:
         run_playerctl(["--player", player, "play"])
 
 
-def start_relax_music() -> subprocess.Popen | None:
+def start_relax_music(volume: int) -> subprocess.Popen | None:
     """Loop the first numbered local relax track in a separate audio player."""
     if IS_DEV or not RELAX_AUDIO_FILES:
         return None
     if shutil.which("ffplay") is not None:
-        command = ["ffplay", "-nodisp", "-loglevel", "error", "-loop", "0", str(RELAX_AUDIO_FILES[0])]
+        command = ["ffplay", "-nodisp", "-loglevel", "error", "-volume", str(volume),
+                   "-loop", "0", str(RELAX_AUDIO_FILES[0])]
     elif shutil.which("cvlc") is not None:
         command = ["cvlc", "--intf", "dummy", "--no-video", "--loop", str(RELAX_AUDIO_FILES[0])]
     else:
@@ -748,6 +749,7 @@ def show_break_window(
     evening_auto_pet_applied = False
     audio_was_muted: bool | None = None
     relax_player: subprocess.Popen | None = None
+    active_relax_volume: int | None = None
     relax_enabled = settings["relax_music_enabled"]
     relax_available = bool(RELAX_AUDIO_FILES) and bool(shutil.which("ffplay") or shutil.which("cvlc"))
     volume_update_id = None
@@ -759,14 +761,21 @@ def show_break_window(
         volume_update_id = None
         if relax_player is None or relax_player.poll() is not None:
             return
-        if not set_relax_volume(relax_player, settings["relax_volume"]) and attempt < 12:
+        if shutil.which("ffplay") is not None and active_relax_volume != settings["relax_volume"]:
+            stop_break_music()
+            start_break_music()
+            return
+        # FFplay applies the selected volume itself. Keep its PulseAudio stream at
+        # unity so a saved stream volume cannot multiply the requested level.
+        stream_volume = 100 if shutil.which("ffplay") is not None else settings["relax_volume"]
+        if not set_relax_volume(relax_player, stream_volume) and attempt < 12:
             volume_update_id = window.after(250, apply_relax_volume, attempt + 1)
 
     def queue_relax_volume() -> None:
         nonlocal volume_update_id
         if volume_update_id is not None:
             window.after_cancel(volume_update_id)
-        volume_update_id = window.after(100, apply_relax_volume)
+        volume_update_id = window.after(200, apply_relax_volume)
 
     def stop_break_music() -> None:
         nonlocal relax_player, volume_update_id
@@ -777,10 +786,11 @@ def show_break_window(
         relax_player = None
 
     def start_break_music() -> None:
-        nonlocal relax_player
+        nonlocal relax_player, active_relax_volume
         if not waiting_for_new_day and not cat_petted and relax_enabled and relax_player is None:
-            relax_player = start_relax_music()
+            relax_player = start_relax_music(settings["relax_volume"])
             if relax_player is not None:
+                active_relax_volume = settings["relax_volume"]
                 queue_relax_volume()
 
     def restore_audio() -> None:
@@ -897,7 +907,10 @@ def show_break_window(
         value_label.pack(anchor="e")
 
         def change_volume(raw_value: str) -> None:
-            settings["relax_volume"] = int(float(raw_value))
+            selected_volume = int(float(raw_value))
+            if selected_volume == settings["relax_volume"]:
+                return
+            settings["relax_volume"] = selected_volume
             value_label.configure(text=f"{settings['relax_volume']}%")
             save_settings(settings)
             queue_relax_volume()

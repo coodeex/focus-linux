@@ -21,7 +21,7 @@ Work with a quiet, always-on-top clock. When the session ends, Focus2 fills the 
 3. **Pet the cat.** Click the cat or **Pet** to settle it, silence its reminders, and mute the default audio output. **Unpet** restores audio if Focus2 muted it.
 4. **Continue when you choose.** **Done** starts the next focus session. If you leave within the first minute, Focus2 offers a shorter one-time focus period. You can also adjust the remaining break time by clicking its countdown.
 
-Breaks can also play a local relax track automatically. Click the small **♫** button between the stats and the cat to switch it on or off. Right-click it to set the relax track's volume with a slider; that setting affects only this track and is remembered. Petting the cat, including the automatic pet at 17:00, stops the relax track; unpetting resumes it if enabled. The track also stops before your earlier music resumes.
+Breaks can also play a local relax track automatically. Click the small **♫** button between the stats and the cat to switch it on or off. Right-click it to set the relax track's volume with a slider; that setting affects only this track and is remembered. The track briefly restarts after a volume change. Petting the cat, including the automatic pet at 17:00, stops the relax track; unpetting resumes it if enabled. The track also stops before your earlier music resumes.
 
 <div align="center">
   <img src="docs/images/focus-timer.png" alt="Focus2 compact circular focus timer" width="300">
