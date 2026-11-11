@@ -636,12 +636,12 @@ def show_focus_window(
                     settings_window.after(100, check_layout)
                     return
                 stdout, stderr = process.communicate()
-                if not settings_window.winfo_exists():
+                if settings_window is None or not settings_window.winfo_exists():
                     return
-                layout_button.configure(state="normal")
                 if process.returncode == 0:
-                    layout_status.configure(text="Focus layout applied.", foreground="#b9f6ca")
+                    close_settings()
                 else:
+                    layout_button.configure(state="normal")
                     detail = stderr.strip() or stdout.strip() or f"Exit code {process.returncode}"
                     layout_status.configure(text=f"Focus layout failed: {detail}",
                                             foreground="#ff8a9b")
